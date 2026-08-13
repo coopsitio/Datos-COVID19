@@ -248,6 +248,69 @@ def medir_arbol(origen: Path, limite_archivos: int = 200_000) -> dict:
     return total
 
 
+def _anclas() -> list[tuple[str, Path]]:
+    """Carpetas base del perfil, de la más específica a la más general.
+
+    Sirven para guardar rutas como '{APPDATA}/Code/User/settings.json' en vez de
+    'C:/Users/antiguo/AppData/...': el equipo nuevo tiene otro nombre de usuario
+    y puede tener Documentos redirigido a OneDrive.
+    """
+    inicio = Path.home()
+    anclas: list[tuple[str, Path]] = []
+    for token, valor in (
+        ("APPDATA", os.environ.get("APPDATA")),
+        ("LOCALAPPDATA", os.environ.get("LOCALAPPDATA")),
+        ("ONEDRIVE", os.environ.get("OneDrive") or os.environ.get("OneDriveCommercial")),
+        ("PROGRAMDATA", os.environ.get("ProgramData")),
+    ):
+        if valor:
+            anclas.append((token, Path(valor)))
+
+    for nombre in ("Documents", "Documentos"):
+        candidato = inicio / nombre
+        if candidato.exists():
+            anclas.append(("DOCUMENTS", candidato))
+            break
+
+    anclas.append(("HOME", inicio))
+    # La ruta más larga gana: HOME es prefijo de casi todas las demás.
+    return sorted(anclas, key=lambda par: len(str(par[1])), reverse=True)
+
+
+def a_plantilla(ruta: Path) -> str:
+    """Convierte una ruta absoluta en una plantilla portable entre equipos."""
+    ruta = Path(ruta)
+    for token, base in _anclas():
+        if _es_subruta(ruta, base):
+            relativa = ruta.relative_to(base).as_posix()
+            return f"{{{token}}}/{relativa}" if relativa else f"{{{token}}}"
+    return ruta.as_posix()
+
+
+def desde_plantilla(plantilla: str) -> Path:
+    """Resuelve una plantilla contra las carpetas de ESTE equipo."""
+    if not plantilla.startswith("{"):
+        return Path(plantilla)
+    cierre = plantilla.index("}")
+    token = plantilla[1:cierre]
+    resto = plantilla[cierre + 1:].lstrip("/")
+
+    bases = {nombre: base for nombre, base in _anclas()}
+    base = bases.get(token)
+    if base is None:
+        # El equipo nuevo puede no tener OneDrive o Documentos redirigido:
+        # se cae a una ubicación equivalente dentro del perfil.
+        respaldo = {
+            "APPDATA": Path.home() / "AppData/Roaming",
+            "LOCALAPPDATA": Path.home() / "AppData/Local",
+            "DOCUMENTS": Path.home() / "Documents",
+            "ONEDRIVE": Path.home() / "OneDrive",
+            "PROGRAMDATA": Path("C:/ProgramData"),
+        }
+        base = respaldo.get(token, Path.home())
+    return base / resto if resto else base
+
+
 def datos_del_equipo() -> dict:
     return {
         "host": platform.node(),

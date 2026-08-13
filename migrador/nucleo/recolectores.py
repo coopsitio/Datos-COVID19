@@ -299,6 +299,12 @@ def descubrir_carpetas_de_trabajo(
                 continue
             if nombre.startswith("$") or str(sub) in ya_vistas:
                 continue
+            # Las carpetas ocultas del perfil (.claude, .ssh, .git...) ya las
+            # maneja la sección de configuraciones; incluirlas aquí las
+            # duplicaría y arrastraría el historial que se excluye a propósito.
+            # El .claude de un proyecto sí viaja: va dentro de su proyecto.
+            if nombre.startswith("."):
+                continue
             es_trabajo, razones = _es_carpeta_de_trabajo(sub)
             if es_trabajo:
                 ya_vistas.add(str(sub))
