@@ -433,6 +433,34 @@ class PruebaColisionDeNombres(unittest.TestCase):
             shutil.rmtree(raiz, ignore_errors=True)
 
 
+class PruebaPaqueteDentroDelPerfil(unittest.TestCase):
+    """Exportar a una carpeta del perfil no debe meter el paquete en sí mismo."""
+
+    def test_el_paquete_no_se_recolecta_a_si_mismo(self):
+        raiz = Path(tempfile.mkdtemp())
+        try:
+            inicio = _perfil_de_ejemplo(raiz)
+            # Se exporta dentro del propio perfil, como al usar OneDrive.
+            with equipo_simulado(inicio):
+                paquete = exportar.crear_paquete(CALLADA, destino=inicio / "Migracion")
+                manifiesto = json.loads(
+                    (paquete / "manifiesto.json").read_text(encoding="utf-8")
+                )
+
+            recolectadas = [
+                c["origen"] for c in manifiesto["carpetas_detectadas"] + manifiesto["archivos"]
+            ]
+            for origen in recolectadas:
+                self.assertFalse(
+                    Path(origen).is_relative_to(paquete),
+                    f"el paquete se recolectó a sí mismo: {origen}",
+                )
+            # Y no debe quedar un paquete anidado dentro del paquete.
+            self.assertEqual(list(paquete.glob("archivos/*/manifiesto.json")), [])
+        finally:
+            shutil.rmtree(raiz, ignore_errors=True)
+
+
 class PruebaScriptsPowerShell(unittest.TestCase):
     """No hay PowerShell aquí, así que se revisa lo que sí se puede revisar."""
 

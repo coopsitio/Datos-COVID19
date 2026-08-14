@@ -357,6 +357,7 @@ def descubrir_carpetas_de_trabajo(
     consola: Consola,
     raices_extra: list[str] | None = None,
     profundidad_maxima: int = 3,
+    excluir: Path | None = None,
 ) -> list[dict]:
     """Busca en el perfil del usuario carpetas que parezcan trabajo propio.
 
@@ -390,6 +391,12 @@ def descubrir_carpetas_de_trabajo(
             if nombre in CARPETAS_PERFIL_IGNORADAS or nombre in CARPETAS_EXCLUIDAS:
                 continue
 
+            # El paquete que se está creando no es trabajo del usuario. Si se
+            # exporta a una carpeta del perfil, el descubrimiento lo encuentra
+            # recién hecho y lo copiaría dentro de sí mismo.
+            if excluir is not None and sub.is_relative_to(excluir):
+                continue
+
             motivo = CARPETAS_OMITIDAS_POR_DEFECTO.get(nombre)
             if motivo and str(sub) not in rutas_extra:
                 # No se entra: recorrerla puede costar decenas de GB de lectura
@@ -406,6 +413,13 @@ def descubrir_carpetas_de_trabajo(
                 continue
             es_trabajo, razones = _es_carpeta_de_trabajo(sub)
             if es_trabajo:
+                # Copiar una carpeta que contiene al paquete lo metería dentro
+                # de sí mismo, duplicándolo en cada exportación.
+                if excluir is not None and excluir.is_relative_to(sub):
+                    omitidas.append(
+                        {"origen": str(sub), "motivo": "contiene al paquete de migración"}
+                    )
+                    continue
                 ya_vistas.add(str(sub))
                 en_onedrive = es_ruta_de_onedrive(sub)
                 # Medir una carpeta ya sincronizada no aporta: no se va a

@@ -258,9 +258,12 @@ def crear_paquete(
 
     # ---- Carpetas de trabajo ---------------------------------------------- #
     consola.titulo("Carpetas de trabajo")
-    carpetas = recolectores.descubrir_carpetas_de_trabajo(consola, carpetas_extra)
-    # Nunca copiar el paquete dentro de sí mismo.
-    carpetas = [c for c in carpetas if not str(paquete).startswith(str(Path(c["origen"])))]
+    # Se le pasa la ruta del paquete: si se exporta a una carpeta del perfil,
+    # el descubrimiento encuentra el paquete recién creado y lo trataría como
+    # trabajo del usuario, copiándolo dentro de sí mismo.
+    carpetas = recolectores.descubrir_carpetas_de_trabajo(
+        consola, carpetas_extra, excluir=paquete
+    )
     manifiesto["carpetas_detectadas"] = carpetas
 
     copiadas_archivos = []
