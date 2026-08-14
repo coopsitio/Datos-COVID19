@@ -228,6 +228,7 @@ def copiar_arbol(
     excluir_extensiones: set[str] | None = None,
     limite_bytes: int | None = None,
     limite_archivo_bytes: int = 50 * 1024 * 1024,
+    omitir_en_la_nube: bool = True,
 ) -> dict:
     """Copia un árbol de archivos aplicando exclusiones y límites de tamaño.
 
@@ -258,9 +259,12 @@ def copiar_arbol(
             except OSError:
                 resumen["omitidos"].append({"ruta": str(ruta_archivo), "motivo": "ilegible"})
                 continue
-            if esta_solo_en_la_nube(info):
-                # Copiarlo obligaría a OneDrive a descargarlo. Si está en la
-                # nube, ya llegará solo al equipo nuevo al sincronizar.
+            if omitir_en_la_nube and esta_solo_en_la_nube(info):
+                # Al exportar, copiarlo obligaría a OneDrive a descargarlo, y
+                # si está en la nube ya llegará solo al equipo nuevo.
+                # Al restaurar es al revés: hay que traerlo sí o sí, porque es
+                # el contenido del paquete. Ahí se pasa omitir_en_la_nube=False
+                # y la lectura fuerza la descarga.
                 resumen["en_la_nube"] += 1
                 continue
             tamano = info.st_size

@@ -461,6 +461,54 @@ class PruebaPaqueteDentroDelPerfil(unittest.TestCase):
             shutil.rmtree(raiz, ignore_errors=True)
 
 
+class PruebaArchivosEnLaNube(unittest.TestCase):
+    """Un paquete que viajó por OneDrive puede llegar sin descargar."""
+
+    def setUp(self) -> None:
+        self.raiz = Path(tempfile.mkdtemp())
+        self.origen = self.raiz / "paquete"
+        self.origen.mkdir()
+        (self.origen / "importante.txt").write_text("contenido", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.raiz, ignore_errors=True)
+
+    @contextlib.contextmanager
+    def _todo_en_la_nube(self):
+        with mock.patch.object(util, "esta_solo_en_la_nube", lambda info: True):
+            yield
+
+    def test_al_exportar_se_omite_lo_que_esta_solo_en_la_nube(self):
+        with self._todo_en_la_nube():
+            resumen = util.copiar_arbol(self.origen, self.raiz / "export")
+        self.assertEqual(resumen["archivos"], 0)
+        self.assertEqual(resumen["en_la_nube"], 1)
+
+    def test_al_restaurar_no_se_omite_nada(self):
+        # Es el caso real: el paquete viajó por OneDrive y sus archivos son
+        # marcadores. Saltárselos dejaría carpetas vacías sin avisar.
+        destino = self.raiz / "restaurado"
+        with self._todo_en_la_nube():
+            resumen = util.copiar_arbol(self.origen, destino, omitir_en_la_nube=False)
+        self.assertEqual(resumen["archivos"], 1)
+        self.assertEqual((destino / "importante.txt").read_text(encoding="utf-8"), "contenido")
+
+    def test_la_importacion_restaura_aunque_esten_en_la_nube(self):
+        paquete = self.raiz / "pkg"
+        (paquete / "configuraciones/claude/.claude").mkdir(parents=True)
+        (paquete / "configuraciones/claude/.claude/CLAUDE.md").write_text("memoria", encoding="utf-8")
+        entrada = {
+            "ruta_en_paquete": "configuraciones/claude/.claude",
+            "destino_plantilla": str(self.raiz / "destino/.claude"),
+        }
+        app = importar.Aplicador(CALLADA, simular=False)
+        with self._todo_en_la_nube():
+            importar._restaurar_ruta(app, paquete, entrada, "claude")
+        self.assertEqual(
+            (self.raiz / "destino/.claude/CLAUDE.md").read_text(encoding="utf-8"), "memoria"
+        )
+
+
 class PruebaScriptsPowerShell(unittest.TestCase):
     """No hay PowerShell aquí, así que se revisa lo que sí se puede revisar."""
 

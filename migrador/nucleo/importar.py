@@ -143,11 +143,15 @@ def _restaurar_ruta(app: Aplicador, paquete: Path, entrada: dict, etiqueta: str)
     app.respaldar(destino)
     try:
         if origen.is_dir():
-            # Sin exclusiones: lo que está en el paquete ya fue filtrado al exportar.
+            # Sin exclusiones: lo que está en el paquete ya fue filtrado al
+            # exportar. Y sin omitir lo que esté solo en la nube: si el paquete
+            # viajó por OneDrive, sus archivos pueden ser marcadores sin
+            # descargar, y saltárselos restauraría carpetas vacías en silencio.
             copiar_arbol(
                 origen, destino,
                 excluir_carpetas=set(), excluir_extensiones=set(),
                 limite_archivo_bytes=1024**3,
+                omitir_en_la_nube=False,
             )
         else:
             destino.parent.mkdir(parents=True, exist_ok=True)
