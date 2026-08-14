@@ -25,7 +25,9 @@ from .util import (
 )
 
 
-def _copiar_configuracion(entrada: dict, paquete: Path, consola: Consola) -> dict | None:
+def _copiar_configuracion(
+    entrada: dict, paquete: Path, consola: Consola, usadas: set[str] | None = None
+) -> dict | None:
     """Copia un archivo o carpeta de configuración al paquete."""
     origen = Path(entrada["origen"])
     if not origen.exists():
@@ -34,7 +36,22 @@ def _copiar_configuracion(entrada: dict, paquete: Path, consola: Consola) -> dic
     plantilla = a_plantilla(origen)
     # `ruta_en_paquete` siempre es relativa a la raíz del paquete: es lo que usa
     # la importación para encontrar el archivo.
-    relativa = Path("configuraciones") / entrada["categoria"] / ruta_segura(origen.name)
+    base = Path("configuraciones") / entrada["categoria"]
+    relativa = base / ruta_segura(origen.name)
+
+    # Un mismo nombre puede venir de varias rutas: es habitual tener dos
+    # tnsnames.ora, uno por cliente Oracle instalado. Sin desambiguar, el
+    # segundo pisaría al primero y una instalación recibiría el archivo
+    # equivocado. Se antepone la carpeta de origen, que es lo que los distingue.
+    if usadas is not None and relativa.as_posix() in usadas:
+        relativa = base / ruta_segura(origen.parent.name) / ruta_segura(origen.name)
+        contador = 2
+        while relativa.as_posix() in usadas:
+            relativa = base / f"{ruta_segura(origen.parent.name)}_{contador}" / ruta_segura(origen.name)
+            contador += 1
+    if usadas is not None:
+        usadas.add(relativa.as_posix())
+
     destino = paquete / relativa
 
     try:
@@ -207,8 +224,9 @@ def crear_paquete(
     consola.titulo("Configuraciones")
     encontradas = recolectores.descubrir_configuraciones(incluir_secretos)
     copiadas = []
+    usadas: set[str] = set()
     for entrada in encontradas:
-        resultado = _copiar_configuracion(entrada, paquete, consola)
+        resultado = _copiar_configuracion(entrada, paquete, consola, usadas)
         if resultado:
             copiadas.append(resultado)
             consola.paso(f"{entrada['categoria']}: {Path(entrada['origen']).name}")

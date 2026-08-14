@@ -406,6 +406,33 @@ class PruebaOracle(unittest.TestCase):
             shutil.rmtree(paquete, ignore_errors=True)
 
 
+class PruebaColisionDeNombres(unittest.TestCase):
+    """Dos archivos con el mismo nombre no pueden pisarse dentro del paquete."""
+
+    def test_dos_tnsnames_no_se_sobrescriben(self):
+        raiz = Path(tempfile.mkdtemp())
+        try:
+            paquete = raiz / "paquete"
+            entradas = []
+            for cliente, contenido in (("instantclient_21", "BASE_A"), ("client_1", "BASE_B")):
+                carpeta = raiz / cliente / "network/admin"
+                carpeta.mkdir(parents=True)
+                (carpeta / "tnsnames.ora").write_text(contenido, encoding="utf-8")
+                entradas.append({"categoria": "oracle", "origen": str(carpeta / "tnsnames.ora")})
+
+            usadas: set[str] = set()
+            copiadas = [
+                exportar._copiar_configuracion(e, paquete, CALLADA, usadas) for e in entradas
+            ]
+
+            rutas = [c["ruta_en_paquete"] for c in copiadas]
+            self.assertEqual(len(set(rutas)), 2, f"ambos quedaron en la misma ruta: {rutas}")
+            contenidos = {(paquete / r).read_text(encoding="utf-8") for r in rutas}
+            self.assertEqual(contenidos, {"BASE_A", "BASE_B"})
+        finally:
+            shutil.rmtree(raiz, ignore_errors=True)
+
+
 class PruebaScriptsPowerShell(unittest.TestCase):
     """No hay PowerShell aquí, así que se revisa lo que sí se puede revisar."""
 
