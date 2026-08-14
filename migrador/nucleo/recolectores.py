@@ -27,6 +27,33 @@ MARCADORES_PROYECTO = {
 }
 EXTENSIONES_PROYECTO = {".py", ".ps1", ".bat", ".cmd", ".sh", ".ipynb"}
 
+# Carpetas que se omiten por defecto pero se informan: pueden contener scripts
+# sueltos, pero arrastran decenas de GB que no son trabajo propio. Si hay algo
+# que rescatar ahí, se agrega explícitamente con --carpeta.
+CARPETAS_OMITIDAS_POR_DEFECTO = {
+    "downloads": "carpeta de descargas",
+    "descargas": "carpeta de descargas",
+    "npm-cache": "caché de npm",
+    ".npm": "caché de npm",
+    "onedrivetemp": "temporales de OneDrive",
+}
+
+
+def es_ruta_de_onedrive(ruta: Path) -> bool:
+    """Indica si una ruta vive dentro de alguna carpeta sincronizada por OneDrive.
+
+    No basta con mirar %OneDrive%: es común tener más de una raíz sincronizada
+    (por ejemplo la personal en C: y la de la empresa en D:), y la variable de
+    entorno apunta solo a una. Lo que las identifica a todas es el nombre de la
+    carpeta raíz, que OneDrive siempre nombra "OneDrive" o "OneDrive - Empresa".
+    """
+    for variable in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        valor = os.environ.get(variable)
+        if valor and str(ruta).lower().startswith(valor.lower()):
+            return True
+    return any(parte.lower().startswith("onedrive") for parte in ruta.parts)
+
+
 # Carpetas del perfil de usuario que jamás contienen automatizaciones propias.
 CARPETAS_PERFIL_IGNORADAS = {
     "appdata", "application data", "local settings", "nethood", "printhood",
@@ -86,6 +113,67 @@ def _candidatos_secretos() -> list[Path]:
     ]
 
 
+def descubrir_oracle() -> list[dict]:
+    """Busca la configuración de red de Oracle (tnsnames.ora y compañía).
+
+    Vive fuera del perfil del usuario, así que el descubrimiento normal no la
+    ve. Sin estos archivos, un cliente Oracle recién instalado no sabe a qué
+    base conectarse: las herramientas muestran la lista de servidores vacía.
+    """
+    carpetas: list[Path] = []
+
+    for variable in ("TNS_ADMIN", "ORACLE_HOME"):
+        valor = os.environ.get(variable)
+        if not valor:
+            continue
+        base = Path(valor)
+        carpetas += [base, base / "network/admin"]
+
+    # Rutas donde el instalador de Oracle deja el cliente por convención.
+    for raiz in (Path("C:/oracle"), Path("C:/app"), Path("C:/Oracle"),
+                 Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Oracle"):
+        if not raiz.is_dir():
+            continue
+        try:
+            # Se limita la profundidad: estos árboles son enormes.
+            carpetas += [p for p in raiz.glob("*/network/admin") if p.is_dir()]
+            carpetas += [p for p in raiz.glob("*/*/network/admin") if p.is_dir()]
+            carpetas += [p for p in raiz.glob("*/*/*/network/admin") if p.is_dir()]
+            carpetas += [p for p in raiz.glob("instantclient*") if p.is_dir()]
+        except OSError:
+            continue
+
+    encontrados: list[dict] = []
+    vistos: set[str] = set()
+    for carpeta in carpetas:
+        if not carpeta.is_dir():
+            continue
+        for nombre in ("tnsnames.ora", "sqlnet.ora", "ldap.ora", "oraaccess.xml"):
+            archivo = carpeta / nombre
+            if not archivo.is_file() or str(archivo).lower() in vistos:
+                continue
+            vistos.add(str(archivo).lower())
+            try:
+                tamano = archivo.stat().st_size
+            except OSError:
+                continue
+            encontrados.append(
+                {
+                    "categoria": "oracle",
+                    "origen": str(archivo),
+                    "tipo": "archivo",
+                    "archivos": 1,
+                    "bytes": tamano,
+                    # Estos archivos van fuera del perfil, a la ruta exacta del
+                    # cliente Oracle. Si el cliente no está instalado en el
+                    # equipo nuevo, no se restauran: crear la carpeta a mano
+                    # solo dejaría archivos huérfanos.
+                    "requiere_carpeta_previa": True,
+                }
+            )
+    return encontrados
+
+
 def descubrir_configuraciones(incluir_secretos: bool) -> list[dict]:
     """Arma la lista de archivos de configuración presentes en este equipo."""
     encontrados: list[dict] = []
@@ -121,6 +209,8 @@ def descubrir_configuraciones(incluir_secretos: bool) -> list[dict]:
                         "sensible": ruta in _candidatos_secretos(),
                     }
                 )
+
+    encontrados += descubrir_oracle()
 
     if incluir_secretos:
         for ruta in _candidatos_secretos():
@@ -284,7 +374,9 @@ def descubrir_carpetas_de_trabajo(
             raices.append(ruta)
 
     encontradas: list[dict] = []
+    omitidas: list[dict] = []
     ya_vistas: set[str] = set()
+    rutas_extra = {str(Path(os.path.expandvars(e)).expanduser()) for e in (raices_extra or [])}
 
     def explorar(carpeta: Path, nivel: int) -> None:
         if nivel > profundidad_maxima:
@@ -297,6 +389,13 @@ def descubrir_carpetas_de_trabajo(
             nombre = sub.name.lower()
             if nombre in CARPETAS_PERFIL_IGNORADAS or nombre in CARPETAS_EXCLUIDAS:
                 continue
+
+            motivo = CARPETAS_OMITIDAS_POR_DEFECTO.get(nombre)
+            if motivo and str(sub) not in rutas_extra:
+                # No se entra: recorrerla puede costar decenas de GB de lectura
+                # y no hay nada que rescatar salvo que se pida explícitamente.
+                omitidas.append({"origen": str(sub), "motivo": motivo})
+                continue
             if nombre.startswith("$") or str(sub) in ya_vistas:
                 continue
             # Las carpetas ocultas del perfil (.claude, .ssh, .git...) ya las
@@ -308,7 +407,10 @@ def descubrir_carpetas_de_trabajo(
             es_trabajo, razones = _es_carpeta_de_trabajo(sub)
             if es_trabajo:
                 ya_vistas.add(str(sub))
-                medida = medir_arbol(sub)
+                en_onedrive = es_ruta_de_onedrive(sub)
+                # Medir una carpeta ya sincronizada no aporta: no se va a
+                # copiar, y recorrerla es justamente lo caro.
+                medida = {"archivos": 0, "bytes": 0} if en_onedrive else medir_arbol(sub)
                 encontradas.append(
                     {
                         "origen": str(sub),
@@ -316,7 +418,7 @@ def descubrir_carpetas_de_trabajo(
                         "motivos": razones,
                         "archivos": medida["archivos"],
                         "bytes": medida["bytes"],
-                        "en_onedrive": bool(onedrive) and str(sub).startswith(str(onedrive)),
+                        "en_onedrive": en_onedrive,
                     }
                 )
                 continue  # el proyecto viaja entero; no hace falta seguir bajando
@@ -326,4 +428,9 @@ def descubrir_carpetas_de_trabajo(
         consola.paso(f"buscando carpetas de trabajo en {raiz}")
         explorar(raiz, 1)
 
-    return sorted(encontradas, key=lambda c: c["bytes"], reverse=True)
+    encontradas.sort(key=lambda c: c["bytes"], reverse=True)
+    for entrada in omitidas:
+        consola.paso(f"omitida por defecto: {entrada['origen']} ({entrada['motivo']})")
+    if omitidas:
+        consola.paso("si hay trabajo tuyo ahí, agrégalo con --carpeta \"<ruta>\"")
+    return encontradas

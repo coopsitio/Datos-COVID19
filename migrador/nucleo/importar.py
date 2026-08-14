@@ -32,6 +32,7 @@ class Aplicador:
         self.carpeta_respaldo = Path.home() / f"migracion-respaldo-{marca_tiempo()}"
         self.cambios: list[dict] = []
         self.respaldos = 0
+        self.pendientes: list[str] = []
 
     def registrar(self, tipo: str, detalle: str) -> None:
         self.cambios.append({"tipo": tipo, "detalle": detalle})
@@ -122,6 +123,17 @@ def _restaurar_ruta(app: Aplicador, paquete: Path, entrada: dict, etiqueta: str)
     if not origen.exists():
         return
     destino = desde_plantilla(entrada["destino_plantilla"])
+
+    if entrada.get("requiere_carpeta_previa") and not destino.parent.is_dir():
+        # Caso típico: tnsnames.ora cuando el cliente Oracle todavía no está
+        # instalado. Crear la carpeta dejaría el archivo huérfano y el cliente
+        # lo sobrescribiría al instalarse.
+        app.consola.aviso(
+            f"{etiqueta}: no existe {destino.parent}, se omite {destino.name}"
+        )
+        app.consola.info("       instala primero el programa y vuelve a correr la importación")
+        app.pendientes.append(str(destino))
+        return
 
     app.consola.paso(f"{etiqueta}: {destino}")
     app.registrar(etiqueta, str(destino))
@@ -271,6 +283,14 @@ def aplicar_paquete(
         consola.info(f"  {len(app.cambios)} cambio(s) aplicados.")
         if app.respaldos:
             consola.info(f"  {app.respaldos} elemento(s) respaldados en {app.carpeta_respaldo}")
+    if app.pendientes:
+        consola.info("")
+        consola.info(f"  {len(app.pendientes)} archivo(s) quedaron pendientes porque falta")
+        consola.info("  instalar el programa al que pertenecen:")
+        for ruta in app.pendientes:
+            consola.info(f"    {ruta}")
+        consola.info("  Instálalos y vuelve a ejecutar la importación.")
+    if not simular:
         consola.info("  Abre una consola nueva para que las variables tomen efecto.")
         consola.info("  Los programas se instalan aparte:")
         consola.info(f"    powershell -ExecutionPolicy Bypass -File "

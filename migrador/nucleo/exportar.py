@@ -58,6 +58,7 @@ def _copiar_configuracion(entrada: dict, paquete: Path, consola: Consola) -> dic
         "archivos": archivos,
         "bytes": bytes_,
         "sensible": entrada.get("sensible", False),
+        "requiere_carpeta_previa": entrada.get("requiere_carpeta_previa", False),
     }
 
 

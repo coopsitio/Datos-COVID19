@@ -339,6 +339,73 @@ class PruebaListadoDeTareas(unittest.TestCase):
         self.assertEqual(len(nombres), 2, nombres)
 
 
+class PruebaOracle(unittest.TestCase):
+    """tnsnames.ora vive fuera del perfil y sin él no hay conexiones."""
+
+    def setUp(self) -> None:
+        self.raiz = Path(tempfile.mkdtemp())
+        self.admin = self.raiz / "instantclient/network/admin"
+        self.admin.mkdir(parents=True)
+        (self.admin / "tnsnames.ora").write_text("BASE1 = (DESCRIPTION=...)", encoding="utf-8")
+        (self.admin / "sqlnet.ora").write_text("NAMES.DIRECTORY_PATH=(TNSNAMES)", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.raiz, ignore_errors=True)
+
+    def test_encuentra_la_configuracion_por_tns_admin(self):
+        with mock.patch.dict(os.environ, {"TNS_ADMIN": str(self.admin)}):
+            nombres = {Path(c["origen"]).name for c in recolectores.descubrir_oracle()}
+        self.assertIn("tnsnames.ora", nombres)
+        self.assertIn("sqlnet.ora", nombres)
+
+    def test_encuentra_la_configuracion_por_oracle_home(self):
+        with mock.patch.dict(os.environ, {"ORACLE_HOME": str(self.raiz / "instantclient")}):
+            nombres = {Path(c["origen"]).name for c in recolectores.descubrir_oracle()}
+        self.assertIn("tnsnames.ora", nombres)
+
+    def test_quedan_marcados_para_no_restaurarse_sin_el_cliente(self):
+        with mock.patch.dict(os.environ, {"TNS_ADMIN": str(self.admin)}):
+            entradas = recolectores.descubrir_oracle()
+        self.assertTrue(all(e["requiere_carpeta_previa"] for e in entradas))
+
+    def test_no_se_restaura_si_falta_la_carpeta_del_cliente(self):
+        paquete = Path(tempfile.mkdtemp())
+        try:
+            (paquete / "configuraciones/oracle").mkdir(parents=True)
+            (paquete / "configuraciones/oracle/tnsnames.ora").write_text("x", encoding="utf-8")
+            entrada = {
+                "ruta_en_paquete": "configuraciones/oracle/tnsnames.ora",
+                "destino_plantilla": str(self.raiz / "no-instalado/network/admin/tnsnames.ora"),
+                "requiere_carpeta_previa": True,
+            }
+            app = importar.Aplicador(CALLADA, simular=False)
+            importar._restaurar_ruta(app, paquete, entrada, "oracle")
+
+            self.assertEqual(app.cambios, [])
+            self.assertEqual(len(app.pendientes), 1)
+            self.assertFalse((self.raiz / "no-instalado").exists(),
+                             "no debe crear la carpeta del cliente Oracle")
+        finally:
+            shutil.rmtree(paquete, ignore_errors=True)
+
+    def test_si_se_restaura_cuando_el_cliente_esta_instalado(self):
+        paquete = Path(tempfile.mkdtemp())
+        try:
+            (paquete / "configuraciones/oracle").mkdir(parents=True)
+            (paquete / "configuraciones/oracle/tnsnames.ora").write_text("BASE1", encoding="utf-8")
+            destino = self.admin / "tnsnames.ora"
+            entrada = {
+                "ruta_en_paquete": "configuraciones/oracle/tnsnames.ora",
+                "destino_plantilla": str(destino),
+                "requiere_carpeta_previa": True,
+            }
+            app = importar.Aplicador(CALLADA, simular=False)
+            importar._restaurar_ruta(app, paquete, entrada, "oracle")
+            self.assertEqual(destino.read_text(encoding="utf-8"), "BASE1")
+        finally:
+            shutil.rmtree(paquete, ignore_errors=True)
+
+
 class PruebaScriptsPowerShell(unittest.TestCase):
     """No hay PowerShell aquí, así que se revisa lo que sí se puede revisar."""
 
