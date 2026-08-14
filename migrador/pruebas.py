@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -28,22 +29,42 @@ CALLADA = Consola(silencioso=True)
 
 
 @contextlib.contextmanager
-def equipo_simulado(variables: dict | None = None):
-    """Aísla las pruebas del equipo real.
+def equipo_simulado(inicio: Path, variables: dict | None = None):
+    """Aísla por completo las pruebas del equipo real.
 
-    Sin esto, al correr en Windows la prueba de ronda completa leía el registro
-    de verdad, exportaba las tareas programadas reales y metía las credenciales
-    del usuario en el paquete de prueba. Un test no debe tocar la máquina.
+    Hay que tapar tres vías, no una: el registro, el entorno y el perfil.
+
+    - El registro y los comandos de Windows: sin esto, en Windows la ronda
+      completa leía las variables de verdad, exportaba las tareas programadas
+      reales y metía las credenciales del usuario en el paquete de prueba.
+    - Las variables de entorno: %OneDrive%, %APPDATA% y %LOCALAPPDATA% se leen
+      del entorno, no de Path.home(). Sin taparlas, el descubrimiento se ponía
+      a recorrer el OneDrive real —descargándolo desde la nube— y copiaba las
+      configuraciones verdaderas de VS Code y Windows Terminal al paquete.
+    - Path.home(), para que todo apunte al perfil falso.
+
+    OneDrive queda apuntando a una ruta inexistente: el descubrimiento
+    comprueba que exista antes de recorrerla, así que simplemente la ignora.
     """
     variables = variables or {}
-    with mock.patch.object(windows, "leer_variables", lambda a: dict(variables.get(a, {}))), \
+    entorno = {
+        "APPDATA": str(inicio / "AppData/Roaming"),
+        "LOCALAPPDATA": str(inicio / "AppData/Local"),
+        "ProgramData": str(inicio / "ProgramData"),
+        "OneDrive": str(inicio / "OneDriveInexistente"),
+        "OneDriveCommercial": str(inicio / "OneDriveInexistente"),
+        "USERNAME": "usuario-de-prueba",
+    }
+    with mock.patch.dict(os.environ, entorno), \
+         mock.patch.object(Path, "home", staticmethod(lambda: inicio)), \
+         mock.patch.object(windows, "leer_variables", lambda a: dict(variables.get(a, {}))), \
          mock.patch.object(windows, "escribir_variable", lambda *a, **k: (True, "")), \
          mock.patch.object(windows, "avisar_cambio_de_entorno", lambda: None), \
          mock.patch.object(windows, "guardar_tareas", lambda *a, **k: []), \
          mock.patch.object(windows, "listar_tareas", lambda *a, **k: []), \
          mock.patch.object(windows, "inventario_gestores", lambda *a, **k: {}), \
          mock.patch.object(windows, "programas_del_registro", lambda: []), \
-         mock.patch.object(windows, "carpeta_inicio", lambda: Path("/no/existe/inicio")):
+         mock.patch.object(windows, "carpeta_inicio", lambda: inicio / "InicioInexistente"):
         yield
 
 
@@ -166,12 +187,12 @@ class PruebaRondaCompleta(unittest.TestCase):
         cls.nuevo = cls.raiz / "nuevo"
         cls.nuevo.mkdir()
 
-        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: cls.antiguo)):
+        with equipo_simulado(cls.antiguo):
             cls.paquete = exportar.crear_paquete(
                 CALLADA, destino=cls.raiz / "traspaso",
                 ruta_herramienta=Path(__file__).resolve().parent,
             )
-        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: cls.nuevo)):
+        with equipo_simulado(cls.nuevo):
             importar.aplicar_paquete(CALLADA, cls.paquete)
 
     @classmethod
@@ -223,7 +244,7 @@ class PruebaRondaCompleta(unittest.TestCase):
             self.assertTrue((self.paquete / relativa).exists(), relativa)
 
     def test_estado_queda_sin_pendientes(self):
-        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: self.nuevo)):
+        with equipo_simulado(self.nuevo):
             resultado = estado.estado_frente_a_paquete(CALLADA, self.paquete)
         self.assertEqual(resultado["pendientes"], 0, resultado)
 
@@ -233,13 +254,32 @@ class PruebaRondaCompleta(unittest.TestCase):
         variables = json.loads((self.paquete / "variables/usuario.json").read_text(encoding="utf-8"))
         self.assertEqual(variables, {})
 
+    def test_todo_lo_recolectado_viene_del_perfil_falso(self):
+        """Guardia contra fugas: nada del paquete puede venir del equipo real.
+
+        Es la prueba que faltaba. El aislamiento se escapó una vez por
+        %OneDrive% y otra por %APPDATA%, y en ambos casos las pruebas
+        recolectaron archivos verdaderos sin que nada fallara.
+        """
+        manifiesto = json.loads((self.paquete / "manifiesto.json").read_text(encoding="utf-8"))
+        origenes = [c["origen"] for c in manifiesto["configuraciones"]]
+        origenes += [c["origen"] for c in manifiesto["archivos"]]
+        origenes += [c["origen"] for c in manifiesto["carpetas_detectadas"]]
+
+        self.assertTrue(origenes, "el manifiesto quedó vacío: la prueba no verifica nada")
+        for origen in origenes:
+            self.assertTrue(
+                Path(origen).is_relative_to(self.antiguo),
+                f"se recolectó algo de fuera del perfil de prueba: {origen}",
+            )
+
 
 class PruebaDescubrimiento(unittest.TestCase):
     def test_no_confunde_carpetas_ocultas_con_proyectos(self):
         raiz = Path(tempfile.mkdtemp())
         try:
             inicio = _perfil_de_ejemplo(raiz)
-            with mock.patch.object(Path, "home", staticmethod(lambda: inicio)):
+            with equipo_simulado(inicio):
                 carpetas = recolectores.descubrir_carpetas_de_trabajo(CALLADA)
             nombres = [c["nombre"] for c in carpetas]
             self.assertIn("automatizaciones", nombres)

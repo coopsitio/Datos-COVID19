@@ -138,6 +138,15 @@ similares, los archivos de más de 50 MB y las carpetas ocultas del perfil (esas
 las cubre la sección de configuraciones). El tope total son 5 GB, ajustable con
 `--limite-gb`.
 
+**Lo que ya está en OneDrive no se copia al paquete.** No tiene sentido
+duplicarlo: al iniciar sesión en el computador nuevo, OneDrive lo sincroniza
+solo. El escaneo te las lista igual, para que sepas que están consideradas. Si
+prefieres llevarlas también dentro del paquete, usa `--incluir-onedrive`.
+
+Los archivos que OneDrive dejó **solo en la nube** (el ícono de nube, sin el
+visto verde) tampoco se copian, porque copiarlos obligaría a descargarlos y
+podría traerse gigabytes sin avisar. Se cuentan aparte en el informe.
+
 ## Qué NO se lleva
 
 - Los programas en sí: viaja la lista para reinstalarlos.

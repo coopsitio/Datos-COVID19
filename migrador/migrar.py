@@ -79,6 +79,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="no copia las carpetas de trabajo, solo las inventaría",
     )
     exportar.add_argument(
+        "--incluir-onedrive", action="store_true",
+        help="copia también las carpetas que ya están en OneDrive (por omisión "
+             "se omiten: se sincronizan solas al equipo nuevo)",
+    )
+    exportar.add_argument(
         "--carpeta", action="append", default=[], metavar="RUTA",
         help="carpeta extra a incluir (se puede repetir)",
     )
@@ -149,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             destino=argumentos.destino,
             incluir_secretos=not argumentos.sin_secretos,
             incluir_archivos=not argumentos.sin_archivos,
+            incluir_onedrive=argumentos.incluir_onedrive,
             carpetas_extra=argumentos.carpeta,
             limite_gb=argumentos.limite_gb,
             ruta_herramienta=Path(__file__).resolve().parent,

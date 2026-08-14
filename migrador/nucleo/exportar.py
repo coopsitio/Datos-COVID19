@@ -116,6 +116,7 @@ def crear_paquete(
     destino: Path,
     incluir_secretos: bool = True,
     incluir_archivos: bool = True,
+    incluir_onedrive: bool = False,
     carpetas_extra: list[str] | None = None,
     limite_gb: float = 5.0,
     ruta_herramienta: Path | None = None,
@@ -137,6 +138,7 @@ def crear_paquete(
         "opciones": {
             "incluir_secretos": incluir_secretos,
             "incluir_archivos": incluir_archivos,
+            "incluir_onedrive": incluir_onedrive,
             "limite_gb": limite_gb,
         },
     }
@@ -243,10 +245,20 @@ def crear_paquete(
     manifiesto["carpetas_detectadas"] = carpetas
 
     copiadas_archivos = []
+    ya_sincronizadas = []
     if incluir_archivos and carpetas:
         usado = 0
         for carpeta in carpetas:
             origen = Path(carpeta["origen"])
+
+            if carpeta.get("en_onedrive") and not incluir_onedrive:
+                # Lo que ya está en OneDrive llega solo al equipo nuevo al
+                # iniciar sesión. Copiarlo al paquete lo duplicaría y obligaría
+                # a descargar de la nube lo que esté solo allá.
+                ya_sincronizadas.append(carpeta)
+                consola.paso(f"{origen.name}: ya está en OneDrive, se sincroniza sola")
+                continue
+
             restante = limite_bytes - usado
             if restante <= 0:
                 consola.aviso(f"se alcanzó el límite de {limite_gb} GB; falta {origen}")
@@ -270,6 +282,12 @@ def crear_paquete(
     elif not incluir_archivos:
         consola.paso(f"{len(carpetas)} carpeta(s) detectadas, no copiadas (--sin-archivos)")
     manifiesto["archivos"] = copiadas_archivos
+    manifiesto["ya_en_onedrive"] = ya_sincronizadas
+    if ya_sincronizadas:
+        consola.info("")
+        consola.info(f"  {len(ya_sincronizadas)} carpeta(s) quedan fuera del paquete por estar")
+        consola.info("  en OneDrive. Llegarán solas al iniciar sesión en el equipo nuevo.")
+        consola.info("  Si quieres copiarlas igual, usa --incluir-onedrive.")
 
     # ---- La herramienta y los textos de apoyo ------------------------------ #
     if ruta_herramienta and ruta_herramienta.exists():

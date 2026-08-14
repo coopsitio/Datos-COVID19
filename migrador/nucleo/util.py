@@ -201,6 +201,18 @@ def ruta_segura(nombre: str) -> str:
     return limpio[:120] or "sin_nombre"
 
 
+# Atributos con que Windows marca los archivos que OneDrive dejó solo en la
+# nube. Leer su tamaño no descarga nada, pero copiarlos sí: fuerza la descarga
+# y puede traerse gigabytes sin avisar.
+ATRIBUTO_SIN_CONTENIDO_LOCAL = 0x1000 | 0x40000 | 0x400000
+
+
+def esta_solo_en_la_nube(info) -> bool:
+    """Indica si un archivo es un marcador de OneDrive sin contenido local."""
+    atributos = getattr(info, "st_file_attributes", 0)
+    return bool(atributos & ATRIBUTO_SIN_CONTENIDO_LOCAL)
+
+
 def _es_subruta(hijo: Path, padre: Path) -> bool:
     try:
         hijo.relative_to(padre)
@@ -226,7 +238,7 @@ def copiar_arbol(
     excluir_extensiones = (
         excluir_extensiones if excluir_extensiones is not None else EXTENSIONES_EXCLUIDAS
     )
-    resumen = {"archivos": 0, "bytes": 0, "omitidos": [], "truncado": False}
+    resumen = {"archivos": 0, "bytes": 0, "omitidos": [], "truncado": False, "en_la_nube": 0}
     origen = origen.resolve()
 
     for carpeta_actual, subcarpetas, archivos in os.walk(origen, onerror=lambda e: None):
@@ -242,10 +254,16 @@ def copiar_arbol(
             if ruta_archivo.suffix.lower() in excluir_extensiones:
                 continue
             try:
-                tamano = ruta_archivo.stat().st_size
+                info = ruta_archivo.stat()
             except OSError:
                 resumen["omitidos"].append({"ruta": str(ruta_archivo), "motivo": "ilegible"})
                 continue
+            if esta_solo_en_la_nube(info):
+                # Copiarlo obligaría a OneDrive a descargarlo. Si está en la
+                # nube, ya llegará solo al equipo nuevo al sincronizar.
+                resumen["en_la_nube"] += 1
+                continue
+            tamano = info.st_size
             if tamano > limite_archivo_bytes:
                 resumen["omitidos"].append(
                     {"ruta": str(ruta_archivo), "motivo": f"pesa {formatear_tamano(tamano)}"}
@@ -271,14 +289,19 @@ def copiar_arbol(
 
 def medir_arbol(origen: Path, limite_archivos: int = 200_000) -> dict:
     """Cuenta archivos y bytes de un árbol sin copiarlo."""
-    total = {"archivos": 0, "bytes": 0}
+    total = {"archivos": 0, "bytes": 0, "en_la_nube": 0}
     for carpeta_actual, subcarpetas, archivos in os.walk(origen, onerror=lambda e: None):
         subcarpetas[:] = [d for d in subcarpetas if d.lower() not in CARPETAS_EXCLUIDAS]
         for archivo in archivos:
             try:
-                total["bytes"] += (Path(carpeta_actual) / archivo).stat().st_size
+                info = (Path(carpeta_actual) / archivo).stat()
             except OSError:
                 continue
+            if esta_solo_en_la_nube(info):
+                # No suma bytes: no se va a copiar.
+                total["en_la_nube"] += 1
+                continue
+            total["bytes"] += info.st_size
             total["archivos"] += 1
             if total["archivos"] >= limite_archivos:
                 return total
