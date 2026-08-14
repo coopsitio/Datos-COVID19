@@ -124,8 +124,20 @@ def listar_tareas(consola: Consola) -> list[dict]:
     tareas: list[dict] = []
     vistas: set[str] = set()
     lector = csv.DictReader(io.StringIO(salida))
+    # El encabezado viene en el idioma de Windows ("TaskName" o "Nombre de
+    # tarea"), así que la columna se resuelve por posición si no se reconoce.
+    campos = lector.fieldnames or []
+    clave_nombre = next(
+        (c for c in campos if c in ("TaskName", "Nombre de tarea")),
+        campos[0] if campos else "TaskName",
+    )
+
     for fila in lector:
-        nombre = (fila.get("TaskName") or fila.get("Nombre de tarea") or "").strip()
+        nombre = (fila.get(clave_nombre) or "").strip()
+        # schtasks repite la fila de encabezado por cada carpeta de tareas;
+        # ahí el valor de la columna es su propio título.
+        if nombre == clave_nombre:
+            continue
         if not nombre or nombre.startswith('"') or nombre in vistas:
             continue
         # Las tareas propias de Windows no se migran: el equipo nuevo ya las trae.
@@ -145,12 +157,25 @@ def listar_tareas(consola: Consola) -> list[dict]:
     return tareas
 
 
-def exportar_tarea_xml(nombre: str) -> str | None:
-    """Devuelve el XML de una tarea, que es lo que permite recrearla idéntica."""
-    codigo, salida, _ = ejecutar(["schtasks", "/query", "/tn", nombre, "/xml", "ONE"])
-    if codigo != 0 or "<?xml" not in salida:
-        return None
-    return salida[salida.index("<?xml"):]
+def exportar_tarea_xml(nombre: str) -> tuple[str | None, str]:
+    """Devuelve (xml, motivo_de_falla) para una tarea.
+
+    El XML es lo que permite recrearla idéntica en el equipo nuevo.
+    """
+    intentos = [nombre]
+    # Algunas versiones de schtasks no aceptan la barra inicial en /tn.
+    if nombre.startswith("\\"):
+        intentos.append(nombre.lstrip("\\"))
+
+    ultimo_error = ""
+    for candidato in intentos:
+        codigo, salida, error = ejecutar(
+            ["schtasks", "/query", "/tn", candidato, "/xml", "ONE"]
+        )
+        if codigo == 0 and "<?xml" in salida:
+            return salida[salida.index("<?xml"):], ""
+        ultimo_error = (error or salida).strip().splitlines()[-1] if (error or salida).strip() else f"código {codigo}"
+    return None, ultimo_error
 
 
 def guardar_tareas(carpeta_destino: Path, consola: Consola) -> list[dict]:
@@ -161,10 +186,11 @@ def guardar_tareas(carpeta_destino: Path, consola: Consola) -> list[dict]:
     carpeta_destino.mkdir(parents=True, exist_ok=True)
     exportadas = []
     for tarea in tareas:
-        xml = exportar_tarea_xml(tarea["nombre"])
+        xml, motivo = exportar_tarea_xml(tarea["nombre"])
         if xml is None:
-            consola.aviso(f"tarea sin XML exportable: {tarea['nombre']}")
+            consola.aviso(f"tarea sin XML exportable: {tarea['nombre']} ({motivo})")
             tarea["archivo_xml"] = None
+            tarea["error"] = motivo
             exportadas.append(tarea)
             continue
         nombre_archivo = ruta_segura(tarea["nombre"].lstrip("\\")) + ".xml"

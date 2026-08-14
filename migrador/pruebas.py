@@ -10,6 +10,7 @@ si se equivocan (sobre todo la fusión del PATH).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import sys
@@ -24,6 +25,26 @@ from nucleo import estado, exportar, importar, recolectores, scripts, util, wind
 from nucleo.util import Consola  # noqa: E402
 
 CALLADA = Consola(silencioso=True)
+
+
+@contextlib.contextmanager
+def equipo_simulado(variables: dict | None = None):
+    """Aísla las pruebas del equipo real.
+
+    Sin esto, al correr en Windows la prueba de ronda completa leía el registro
+    de verdad, exportaba las tareas programadas reales y metía las credenciales
+    del usuario en el paquete de prueba. Un test no debe tocar la máquina.
+    """
+    variables = variables or {}
+    with mock.patch.object(windows, "leer_variables", lambda a: dict(variables.get(a, {}))), \
+         mock.patch.object(windows, "escribir_variable", lambda *a, **k: (True, "")), \
+         mock.patch.object(windows, "avisar_cambio_de_entorno", lambda: None), \
+         mock.patch.object(windows, "guardar_tareas", lambda *a, **k: []), \
+         mock.patch.object(windows, "listar_tareas", lambda *a, **k: []), \
+         mock.patch.object(windows, "inventario_gestores", lambda *a, **k: {}), \
+         mock.patch.object(windows, "programas_del_registro", lambda: []), \
+         mock.patch.object(windows, "carpeta_inicio", lambda: Path("/no/existe/inicio")):
+        yield
 
 
 def _perfil_de_ejemplo(raiz: Path) -> Path:
@@ -145,12 +166,12 @@ class PruebaRondaCompleta(unittest.TestCase):
         cls.nuevo = cls.raiz / "nuevo"
         cls.nuevo.mkdir()
 
-        with mock.patch.object(Path, "home", staticmethod(lambda: cls.antiguo)):
+        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: cls.antiguo)):
             cls.paquete = exportar.crear_paquete(
                 CALLADA, destino=cls.raiz / "traspaso",
                 ruta_herramienta=Path(__file__).resolve().parent,
             )
-        with mock.patch.object(Path, "home", staticmethod(lambda: cls.nuevo)):
+        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: cls.nuevo)):
             importar.aplicar_paquete(CALLADA, cls.paquete)
 
     @classmethod
@@ -202,9 +223,15 @@ class PruebaRondaCompleta(unittest.TestCase):
             self.assertTrue((self.paquete / relativa).exists(), relativa)
 
     def test_estado_queda_sin_pendientes(self):
-        with mock.patch.object(Path, "home", staticmethod(lambda: self.nuevo)):
+        with equipo_simulado(), mock.patch.object(Path, "home", staticmethod(lambda: self.nuevo)):
             resultado = estado.estado_frente_a_paquete(CALLADA, self.paquete)
         self.assertEqual(resultado["pendientes"], 0, resultado)
+
+    def test_el_paquete_no_contiene_datos_del_equipo_real(self):
+        # Si las pruebas leen el registro de verdad, las credenciales del
+        # usuario terminan dentro del paquete de prueba.
+        variables = json.loads((self.paquete / "variables/usuario.json").read_text(encoding="utf-8"))
+        self.assertEqual(variables, {})
 
 
 class PruebaDescubrimiento(unittest.TestCase):
@@ -220,6 +247,56 @@ class PruebaDescubrimiento(unittest.TestCase):
             self.assertNotIn(".claude", nombres)
         finally:
             shutil.rmtree(raiz, ignore_errors=True)
+
+
+class PruebaSalidaDeConsola(unittest.TestCase):
+    """Los comandos de Windows no responden en UTF-8, y eso rompía los acentos."""
+
+    def test_decodifica_cp850(self):
+        # Como responde schtasks en un Windows en español.
+        crudo = "Ejecución FTP Bancos".encode("cp850")
+        self.assertEqual(util._decodificar(crudo), "Ejecución FTP Bancos")
+
+    def test_decodifica_utf8(self):
+        crudo = "Verificación de Folios".encode("utf-8")
+        self.assertEqual(util._decodificar(crudo), "Verificación de Folios")
+
+    def test_no_deja_caracteres_de_reemplazo(self):
+        # cp850 y utf-8 son los dos casos reales: la consola de un Windows en
+        # español y los comandos que ya responden en UTF-8.
+        for codec in ("cp850", "utf-8"):
+            texto = util._decodificar("Automática".encode(codec))
+            self.assertNotIn("\ufffd", texto, codec)
+
+
+class PruebaListadoDeTareas(unittest.TestCase):
+    """El CSV de schtasks trae encabezados repetidos y nombres con acento."""
+
+    CSV = (
+        '"Nombre de tarea","Estado","Tarea que se ejecuta"\r\n'
+        '"\\Ejecución FTP Bancos","Listo","C:\\scripts\\ftp.bat"\r\n'
+        '"Nombre de tarea","Estado","Tarea que se ejecuta"\r\n'
+        '"\\Verificación de Folios Automática","Listo","C:\\scripts\\folios.py"\r\n'
+        '"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","Listo","defrag.exe"\r\n'
+    )
+
+    def _listar(self):
+        salida = self.CSV
+        with mock.patch.object(windows, "ejecutar", lambda *a, **k: (0, salida, "")):
+            return windows.listar_tareas(CALLADA)
+
+    def test_ignora_los_encabezados_repetidos(self):
+        nombres = [t["nombre"] for t in self._listar()]
+        self.assertNotIn("Nombre de tarea", nombres)
+
+    def test_conserva_los_acentos(self):
+        nombres = [t["nombre"] for t in self._listar()]
+        self.assertIn("\\Ejecución FTP Bancos", nombres)
+        self.assertIn("\\Verificación de Folios Automática", nombres)
+
+    def test_descarta_las_tareas_de_windows(self):
+        nombres = [t["nombre"] for t in self._listar()]
+        self.assertEqual(len(nombres), 2, nombres)
 
 
 class PruebaScriptsPowerShell(unittest.TestCase):

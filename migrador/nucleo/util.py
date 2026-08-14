@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import os
 import platform
 import re
@@ -58,7 +59,11 @@ class Consola:
         self.silencioso = silencioso
         for flujo in (sys.stdout, sys.stderr):
             try:
-                flujo.reconfigure(encoding="utf-8", errors="replace")
+                # Solo se ajusta el manejo de errores, NO la codificación: la
+                # consola de Windows suele estar en cp850, y forzar UTF-8 ahí
+                # convierte cada acento en mojibake ("falló" -> "fallÃ³").
+                # cp850 representa bien los acentos del español.
+                flujo.reconfigure(errors="replace")
             except (AttributeError, ValueError):
                 pass
 
@@ -110,6 +115,38 @@ def es_variable_de_ruta(nombre: str) -> bool:
     return nombre.upper() in VARIABLES_TIPO_RUTA
 
 
+def _decodificar(datos: bytes) -> str:
+    """Decodifica la salida de un comando de consola.
+
+    Los programas de Windows (schtasks, winget, choco) escriben en la
+    codificación OEM de la consola —cp850 en un Windows en español—, no en
+    UTF-8. Decodificar mal deja los acentos corruptos, y un nombre de tarea
+    corrupto ya no coincide con la tarea real: deja de poder exportarse.
+
+    Se prueba UTF-8 estricto primero (si el texto es UTF-8 válido, lo es de
+    verdad) y recién después se cae a los códecs del sistema.
+    """
+    if not datos:
+        return ""
+    candidatos = ["utf-8"]
+    if es_windows():
+        # 'oem' es la página de códigos real de la consola; es la autoritativa
+        # y por eso va antes que cualquier suposición.
+        candidatos += ["oem", "mbcs"]
+    else:
+        candidatos.append(locale.getpreferredencoding(False))
+    # Red de seguridad: cp850 es la página OEM de un Windows en español.
+    # También permite verificar esta función fuera de Windows.
+    candidatos.append("cp850")
+
+    for codec in candidatos:
+        try:
+            return datos.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return datos.decode("utf-8", "replace")
+
+
 def ejecutar(comando: list[str], timeout: int = 120) -> tuple[int, str, str]:
     """Ejecuta un comando y devuelve (codigo, stdout, stderr). Nunca lanza excepción."""
     ejecutable = shutil.which(comando[0])
@@ -128,8 +165,8 @@ def ejecutar(comando: list[str], timeout: int = 120) -> tuple[int, str, str]:
         return (1, "", str(exc))
     return (
         proceso.returncode,
-        proceso.stdout.decode("utf-8", "replace"),
-        proceso.stderr.decode("utf-8", "replace"),
+        _decodificar(proceso.stdout),
+        _decodificar(proceso.stderr),
     )
 
 
